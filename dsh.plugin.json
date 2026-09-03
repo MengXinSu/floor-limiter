@@ -1,0 +1,12 @@
+{
+  "name": "floor-limiter",
+  "description": "Floor-triggered session compaction for DeepSeek Harness: compact old history once M real user floors accumulate, keeping the newest N verbatim",
+  "version": "0.1.0",
+  "entry": {
+    "name": "floor-limiter",
+    "inject": []
+  },
+  "client": {
+    "platform": "web"
+  }
+}
