@@ -42,8 +42,9 @@ export function apply(ctx: Context): void {
   const current = () => settings.get()
 
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
+    const live = current()
     const compaction = ctx.agentPresets.serviceFor(agent, 'compaction')
-    await maybeCompactSession(ctx, agent, current(), signal, compaction)
+    await maybeCompactSession(ctx, agent, live, signal, compaction)
     return next()
   })
 }

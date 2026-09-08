@@ -7,11 +7,11 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { settingsNamespace, type SettingsScope } from '@deepseek-ai/dsh-settings'
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { FloorLimiterSettings } from './contract.ts'
 
-/** The branded namespace name (the Web allowlist must list the same string). */
-export const FLOOR_LIMITER_NAMESPACE = settingsNamespace('floor-limiter')
+/** The namespace name (the Web allowlist must list the same string). */
+export const FLOOR_LIMITER_NAMESPACE = 'floor-limiter'
 
 /** Schemastery schema of the `floor-limiter` namespace section. */
 export const FloorLimiterSettingsSchema: z<FloorLimiterSettings> = z.object({

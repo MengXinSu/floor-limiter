@@ -11,7 +11,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
-import type { SessionEvent, Session } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, Session, SessionSeq } from '@deepseek-ai/dsh-session'
 import { toolPairingBalancedAfter, toolPairingBalancedBefore, type CompactionEngine } from '@deepseek-ai/dsh-compaction'
 
 /** The user-source kind that marks a real user floor. */
@@ -30,6 +30,21 @@ function isUserFloor(event: SessionEvent | undefined): boolean {
 }
 
 /**
+ * Read the session event log across harness versions. 0.1.1 exposed an
+ * `events` getter; 0.1.2 removed it in favour of `snapshotEvents()`, so a bare
+ * `session.events` read returns `undefined` there and silently disables the
+ * limiter.
+ * @param session - session whose event log is read.
+ * @returns the session's events, or an empty array when neither API exists.
+ */
+function readEvents(session: Session): readonly SessionEvent[] {
+  const snapshot = (session as { snapshotEvents?: () => readonly SessionEvent[] }).snapshotEvents
+  if (typeof snapshot === 'function') return snapshot.call(session)
+  const legacy = (session as { events?: readonly SessionEvent[] }).events
+  return legacy ?? []
+}
+
+/**
  * The tool-pairing seam resolves Session against the repository declaration
  * graph; the plugin compiles against the profile-graph copy. The runtime
  * objects are structurally identical, so the plugin's session is cast once
@@ -45,8 +60,7 @@ function seamSession(session: Session): Parameters<typeof toolPairingBalancedAft
  * @returns how many user-sourced `user/message` nodes are on the surface.
  */
 export function countUserFloors(session: Session): number {
-  const events = session.events
-  if (events === undefined) return 0
+  const events = readEvents(session)
   const bySeq = new Map<number, SessionEvent>()
   for (const event of events) bySeq.set(event.seq, event)
   let floors = 0
@@ -72,11 +86,10 @@ export function countUserFloors(session: Session): number {
 export function selectCompactionRange(
   session: Session,
   keepFloors: number,
-): { start: number; end: number } | null {
+): { start: SessionSeq; end: SessionSeq } | null {
   const nodes = session.surface.nodes
   if (nodes.length === 0) return null
-  const events = session.events
-  if (events === undefined) return null
+  const events = readEvents(session)
   const bySeq = new Map<number, SessionEvent>()
   for (const event of events) bySeq.set(event.seq, event)
 
