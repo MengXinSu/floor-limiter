@@ -1,43 +1,64 @@
+/** Locale bundles for the floor-limiter settings card (Plugins page, this row). */
+import type { SettingsFormLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+
+/** Locale keys the card renders. */
+export type FloorLimiterLocaleKey =
+  | 'nav' | 'title' | 'description'
+  | 'enabled' | 'enabledHint'
+  | 'triggerFloors' | 'triggerFloorsHint'
+  | 'keepFloors' | 'keepFloorsHint'
+  | 'overridden' | 'reset' | 'readOnly' | 'unavailable'
+  | 'save' | 'saving' | 'saveFailed' | 'invalidNumber' | 'invalidBoolean'
+
+/** English copy. */
+export const en: Record<FloorLimiterLocaleKey, string> = {
+  nav: 'Floor limiter',
+  title: 'Floor limiter',
+  description: 'Compact old history once enough real user floors accumulate, keeping the newest N verbatim.',
+  enabled: 'Enabled',
+  enabledHint: 'Type true or false. While false the limiter never compacts.',
+  triggerFloors: 'Trigger floors',
+  triggerFloorsHint: 'Compact once this many real user floors are on the surface.',
+  keepFloors: 'Floors kept verbatim',
+  keepFloorsHint: 'The newest N floors stay untouched; older ones collapse into one summary.',
+  overridden: 'Overridden',
+  reset: 'Reset to default',
+  readOnly: 'This deployment stores settings read-only.',
+  unavailable: 'This plugin is not loaded, so it cannot be configured right now.',
+  save: 'Save',
+  saving: 'Saving…',
+  saveFailed: 'The deployment did not accept these values; they were left for you to correct.',
+  invalidNumber: 'Enter a whole number, or leave blank to use the default.',
+  invalidBoolean: 'Enter true or false, or leave blank to use the default.',
+}
+
+/** Simplified Chinese copy. */
+export const zh: Record<FloorLimiterLocaleKey, string> = {
+  nav: '楼层限制器',
+  title: '楼层限制器',
+  description: '真实用户楼层攒够数量后压缩一次旧历史，保留最新的 N 层原文。',
+  enabled: '启用',
+  enabledHint: '填 true 或 false；false 时不再触发压缩。',
+  triggerFloors: '触发楼层数',
+  triggerFloorsHint: '真实用户楼层达到这个数量时压缩一次。',
+  keepFloors: '保留楼层数',
+  keepFloorsHint: '最新的 N 层原文保留，更早的合并成一条摘要。',
+  overridden: '已覆盖',
+  reset: '恢复默认',
+  readOnly: '本部署的设置为只读。',
+  unavailable: '该插件当前未加载，暂时无法配置。',
+  save: '保存',
+  saving: '保存中…',
+  saveFailed: '本部署没有接受这些值，已保留供你修改。',
+  invalidNumber: '请填整数；留空表示使用默认值。',
+  invalidBoolean: '请填 true 或 false；留空表示使用默认值。',
+}
+
 /**
- * `floor-limiter` locale namespace: settings-page copy.
- * Chinese is the product copy; English mirrors it.
+ * The form frame's copy, read from this page's dictionary.
+ * @param t - the page's locale reader.
+ * @returns the labels the shared settings form renders.
  */
-
-/** Simplified Chinese dictionary (the key-set source of truth). */
-export const zh = {
-  'nav': '楼层限制器',
-  'settings.title': '楼层限制器',
-  'settings.subtitle': '楼层数攒到触发层数时，把更早的历史压成摘要，保留最近这几层原文。',
-  'settings.enabled': '启用楼层压缩',
-  'settings.enabledDesc': '关闭后本插件不再生效。',
-  'settings.triggerFloors': '触发层数（M）',
-  'settings.triggerFloorsDesc': '模型表面攒够多少层真实用户提问时触发一次压缩。',
-  'settings.keepFloors': '保留层数（N）',
-  'settings.keepFloorsDesc': '压缩时保留最近 N 层原文不压，只把更早的压成摘要。设为 0 表示全部压缩。',
-} satisfies Record<string, string>
-
-/** The `floor-limiter` namespace key union. */
-export type FloorLimiterKey = keyof typeof zh
-
-/** English dictionary, checked complete against the zh key set. */
-export const en = {
-  'nav': 'Floor limiter',
-  'settings.title': 'Floor limiter',
-  'settings.subtitle': 'When the floor count reaches the trigger, older history is collapsed into a summary while the newest N floors stay verbatim.',
-  'settings.enabled': 'Enable floor compaction',
-  'settings.enabledDesc': 'Turning this off disables this plugin.',
-  'settings.triggerFloors': 'Trigger floors (M)',
-  'settings.triggerFloorsDesc': 'Compact once this many real user floors are on the surface.',
-  'settings.keepFloors': 'Keep floors (N)',
-  'settings.keepFloorsDesc': 'Keep the newest N floors verbatim when compacting; only older history is collapsed. 0 compacts everything.',
-} satisfies Record<FloorLimiterKey, string>
-
-/** Locale namespace id registered under ctx.locale. */
-export const NS = 'floor-limiter'
-
-declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface LocaleNamespaceMap {
-    /** The floor-limiter settings copy. */
-    [NS]: FloorLimiterKey
-  }
+export function formLabels(t: (key: FloorLimiterLocaleKey) => string): SettingsFormLabels {
+  return { unavailable: t('unavailable'), readOnly: t('readOnly'), saveFailed: t('saveFailed'), save: t('save'), saving: t('saving') }
 }

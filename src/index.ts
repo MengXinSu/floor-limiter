@@ -2,25 +2,32 @@
  * floor-limiter host plugin: counts real user floors (user turns) on each
  * agent's session surface and, once they reach the configured trigger, runs
  * one compaction that keeps the newest N floors verbatim and collapses the
- * rest into a single summary. All thresholds are live-editable from the Web
- * settings page (Settings → 插件配置 → 楼层限制器) — a change applies at the
- * next pre-step without a restart.
+ * rest into a single summary.
+ *
+ * Thresholds are the plugin's own Config (see `./settings.ts`): dsh 0.1.7
+ * projects that schema into 设置 → 插件配置 and reloads this entry when a form
+ * edit commits, so a change takes effect on the next pre-step without a
+ * restart — the removed `settings.register` namespace and the client
+ * `settingsScope` service are no longer involved.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-settings'
-import type {} from '@deepseek-ai/dsh-compaction'
 import type {} from '@deepseek-ai/dsh-agent-presets'
-import { registerFloorLimiterSettings } from './settings.ts'
+import type {} from '@deepseek-ai/dsh-compaction'
+import type { FloorLimiterSettings } from './contract.ts'
 import { maybeCompactSession } from './limiter.ts'
+import { FloorLimiterSettingsSchema } from './settings.ts'
 
 /** Cordis plugin name (the Loader entry id). */
 export const name = 'floor-limiter'
 
 /**
- * Services required before load: settings (own namespace), agents (lifecycle),
- * and agentPresets (per-agent realm lookup for the compaction seam).
+ * Services required before load: agents (lifecycle) and agentPresets
+ * (per-agent realm lookup for the compaction seam).
  */
-export const inject = ['settings', 'agents', 'agentPresets']
+export const inject = ['agents', 'agentPresets']
+
+/** Editable configuration, projected into the settings page by `ctx.settings`. */
+export const Config: typeof FloorLimiterSettingsSchema = FloorLimiterSettingsSchema
 
 /**
  * Mount the floor limiter on every agent. The pre-step listener is registered
@@ -36,15 +43,14 @@ export const inject = ['settings', 'agents', 'agentPresets']
  * Any compaction failure is swallowed inside `maybeCompactSession` and the
  * turn continues with the full history until the next pre-step.
  * @param ctx - host cordis context.
+ * @param config - committed configuration for this entry.
  */
-export function apply(ctx: Context): void {
-  const settings = registerFloorLimiterSettings(ctx)
-  const current = () => settings.get()
+export function apply(ctx: Context, config: FloorLimiterSettings): void {
+  if (!config.enabled) return
 
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
-    const live = current()
     const compaction = ctx.agentPresets.serviceFor(agent, 'compaction')
-    await maybeCompactSession(ctx, agent, live, signal, compaction)
+    await maybeCompactSession(ctx, agent, config, signal, compaction)
     return next()
   })
 }

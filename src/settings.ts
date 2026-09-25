@@ -1,34 +1,23 @@
 /**
- * The `floor-limiter` settings namespace: the durable enable switch plus the
+ * The `floor-limiter` configuration schema: the durable enable switch plus the
  * two floors thresholds, editable from the Web settings page (Settings →
- * 插件配置 → 楼层限制器). Registered with applies: 'live' so a change takes
- * effect on the next pre-step without a restart; the runtime reads the owner
- * scope's live value on every call.
+ * 插件配置 → floor-limiter).
+ *
+ * dsh 0.1.7 dropped the `settings.register` namespace API and the client
+ * `settingsScope` service: a Loader entry's own Config schema IS the settings
+ * surface now — the settings service projects it into a form, a committed edit
+ * rewrites the profile patch and reloads this entry, so `apply` always reads
+ * the committed values.
  */
-import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import type { FloorLimiterSettings } from './contract.ts'
 
-/** The namespace name (the Web allowlist must list the same string). */
-export const FLOOR_LIMITER_NAMESPACE = 'floor-limiter'
-
-/** Schemastery schema of the `floor-limiter` namespace section. */
-export const FloorLimiterSettingsSchema: z<FloorLimiterSettings> = z.object({
-  enabled: z.boolean().default(true),
+/** Schemastery schema of the plugin's editable configuration.
+ * Every field is `.volatile()`: the settings service only projects volatile
+ * fields into the generated form (`volatileForm`), a plain schema shows nothing. */
+export const FloorLimiterSettingsSchema = z.object({
+  enabled: z.boolean().default(true).volatile(),
   /** Trigger: compact when this many real user floors are on the surface. */
-  triggerFloors: z.number().step(1).min(1).default(20),
+  triggerFloors: z.number().step(1).min(1).default(20).volatile(),
   /** Keep verbatim: the newest N floors are left untouched; only older ones are compacted. */
-  keepFloors: z.number().step(1).min(0).default(5),
+  keepFloors: z.number().step(1).min(0).default(5).volatile(),
 })
-
-/**
- * Register the namespace with the settings provider and return its owner scope.
- * @param ctx - the plugin context carrying the settings provider.
- * @returns the owner scope backing the runtime's live threshold reads.
- */
-export function registerFloorLimiterSettings(ctx: Context): SettingsScope<FloorLimiterSettings> {
-  return ctx.settings.register(FLOOR_LIMITER_NAMESPACE, FloorLimiterSettingsSchema, {
-    applies: 'live',
-  })
-}
