@@ -32,13 +32,30 @@ function floor(withTool = false): Spec[] {
   return out
 }
 
-/** Build a live-format Session from specs (append-only, surfaceOp: 'append'). */
+/**
+ * Build a live-format Session from specs (append-only, surfaceOp: 'append').
+ *
+ * The seed boundary of dsh 0.1.7 validates far more than 0.1.2 did, so every
+ * event below carries the fields the current `Session.create` requires:
+ * - `surfaceOp` on every surface-eligible event;
+ * - `assistant/message` data with `turn` / `step` (safe non-negative integers)
+ *   and a `stream` array — `[]` is accepted, the elements are opaque at seed
+ *   time (session/src/index.ts assertAssistantSettlementShape);
+ * - `tool/result` whose message carries `role: 'tool'`, a top-level
+ *   `toolCallId` equal to `source.callId`, and a `content` array;
+ * - `seq` contiguous from 0.
+ * `assistant/message` must NOT carry `sourceEventSeqs`.
+ */
 function makeSession(specs: readonly Spec[]): Session {
   const events: SessionEvent[] = []
   let seq = 0
+  let turn = 0
+  let openCallId: string | undefined
   for (const spec of specs) {
     const envelope = { seq: seq++, time: 1, surfaceOp: 'append' as const }
     if (spec.type === 'user/message') {
+      turn += 1
+      openCallId = undefined
       events.push({
         ...envelope,
         type: 'user/message' as const,
@@ -52,13 +69,18 @@ function makeSession(specs: readonly Spec[]): Session {
         },
       } as unknown as SessionEvent)
     } else if (spec.type === 'assistant/message') {
+      const callId = `c${seq}`
       const content = spec.withTool
-        ? [{ type: 'tool-call' as const, id: `c${seq}`, name: 'mock', arguments: '{}' }]
+        ? [{ type: 'tool-call' as const, id: callId, name: 'mock', arguments: '{}' }]
         : [{ type: 'text' as const, text: `a${seq}` }]
+      openCallId = spec.withTool ? callId : undefined
       events.push({
         ...envelope,
         type: 'assistant/message' as const,
         data: {
+          turn,
+          step: 1,
+          stream: [],
           message: {
             id: `a${seq}`,
             role: 'assistant' as const,
@@ -68,19 +90,19 @@ function makeSession(specs: readonly Spec[]): Session {
         },
       } as unknown as SessionEvent)
     } else if (spec.type === 'tool/result') {
+      const callId = openCallId ?? `c${seq - 1}`
       events.push({
         ...envelope,
         type: 'tool/result' as const,
         data: {
+          turn,
+          step: 1,
           message: {
             id: `t${seq}`,
-            role: 'user' as const,
-            source: { kind: 'tool' as const, callId: `c${seq - 1}` },
-            content: [{
-              type: 'tool-result' as const,
-              toolCallId: `c${seq - 1}`,
-              content: [{ type: 'text' as const, text: 'ok' }],
-            }],
+            role: 'tool' as const,
+            toolCallId: callId,
+            source: { kind: 'tool' as const, callId },
+            content: [{ type: 'text' as const, text: 'ok' }],
           },
         },
       } as unknown as SessionEvent)

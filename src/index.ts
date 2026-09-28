@@ -11,7 +11,11 @@
  * `settingsScope` service are no longer involved.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+// Type-only: the ctx.agentPresets Context merge. From dsh 0.1.7 on the release
+// that owns the service is @deepseek-ai/dsh-agent-preset-registry — the old
+// @deepseek-ai/dsh-agent-presets package no longer ships (its last npm tag is
+// 0.1.5-rc.3), though the service name 'agentPresets' is unchanged.
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-compaction'
 import type { FloorLimiterSettings } from './contract.ts'
 import { maybeCompactSession } from './limiter.ts'
@@ -39,7 +43,8 @@ export const Config: typeof FloorLimiterSettingsSchema = FloorLimiterSettingsSch
  * injecting it here would leave this plugin `pending` forever and crash the
  * web boot. Instead the seam is read per agent at pre-step time via
  * `ctx.agentPresets.serviceFor(agent, 'compaction')` (official read
- * addressing for isolate-realm services; dsh-agent-presets is host-plane).
+ * addressing for isolate-realm services; dsh-agent-preset-registry is
+ * host-plane).
  * Any compaction failure is swallowed inside `maybeCompactSession` and the
  * turn continues with the full history until the next pre-step.
  * @param ctx - host cordis context.
