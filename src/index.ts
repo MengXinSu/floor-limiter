@@ -10,6 +10,7 @@
  * restart — the removed `settings.register` namespace and the client
  * `settingsScope` service are no longer involved.
  */
+import { appendFileSync, statSync, writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: the ctx.agentPresets Context merge. From dsh 0.1.7 on the release
 // that owns the service is @deepseek-ai/dsh-agent-preset-registry — the old
@@ -17,8 +18,8 @@ import type { Context } from '@deepseek-ai/cordis'
 // 0.1.5-rc.3), though the service name 'agentPresets' is unchanged.
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-compaction'
-import type { FloorLimiterSettings } from './contract.ts'
-import { maybeCompactSession } from './limiter.ts'
+import type { FloorLimiterConfig, FloorLimiterSettings } from './contract.ts'
+import { countUserFloors, maybeCompactSession } from './limiter.ts'
 import { FloorLimiterSettingsSchema } from './settings.ts'
 
 /** Cordis plugin name (the Loader entry id). */
@@ -50,12 +51,64 @@ export const Config: typeof FloorLimiterSettingsSchema = FloorLimiterSettingsSch
  * @param ctx - host cordis context.
  * @param config - committed configuration for this entry.
  */
-export function apply(ctx: Context, config: FloorLimiterSettings): void {
-  if (!config.enabled) return
+/**
+ * 诊断留痕：宿主把 console 输出吞掉了（desktop 端不落盘），所以自己写一个文件，
+ * 便于事后回答「楼层到了为什么没压」。只在真正的决策点写，每次唤醒最多一行；
+ * 文件超过 1MB 就清空重来，避免长期运行无限增长。
+ */
+function diag(line: string): void {
+  // 两条路都走：文件给外部读（desktop 宿主不落盘 console），console 给界面日志面板看。
+  console.log(line)
+  try {
+    // 固定路径：宿主进程的 TEMP 与外部工具不同（形如 Temp\\dsh-xxxx），用 %TEMP% 会找不到文件。
+    const file = 'D:/DeepSeek Workspace/floor-limiter-diag.log'
+    try { if (statSync(file).size > 1_000_000) writeFileSync(file, '') } catch { /* 首次不存在 */ }
+    appendFileSync(file, `${new Date().toISOString()} ${line}\n`)
+  } catch { /* 诊断写不进去不影响主流程 */ }
+}
+
+/** Read a volatile config ref; tolerate already-resolved values (tests, older hosts). */
+function readRef<T>(value: T | { get(): T } | undefined, fallback: T): T {
+  if (value === undefined) return fallback
+  const ref = value as { get?: () => T }
+  return typeof ref.get === 'function' ? ref.get() : (value as T)
+}
+
+/**
+ * Unwrap the volatile config refs into plain values.
+ *
+ * Runs on every wake, not once at mount: the refs are live, so reading them per
+ * pre-step is what makes a settings edit take effect without a restart.
+ * @param config - the volatile config refs handed to apply.
+ * @returns resolved settings with plain booleans and numbers.
+ */
+function resolveConfig(config: FloorLimiterConfig): FloorLimiterSettings {
+  return {
+    enabled: readRef(config.enabled, false),
+    triggerFloors: readRef(config.triggerFloors, 20),
+    keepFloors: readRef(config.keepFloors, 5),
+  }
+}
+
+export function apply(ctx: Context, config: FloorLimiterConfig): void {
+  const resolved = resolveConfig(config)
+  if (!resolved.enabled) {
+    diag('[floor-limiter] disabled by config — the limiter will not run')
+    return
+  }
+  // 运行痕迹：这条只打一次。看不到它 = 插件根本没挂载（例如 inject 未满足而
+  // 永久 pending）——「楼层到了却没压缩」的第一分诊点。
+  diag('[floor-limiter] mounted: pre-step listener registered')
 
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     const compaction = ctx.agentPresets.serviceFor(agent, 'compaction')
-    await maybeCompactSession(ctx, agent, config, signal, compaction)
+    // 每次唤醒都记一行：楼层数 / 阈值 / 引擎是否取到。
+    // 上一次之所以难查，就是因为「达到阈值却没压」时是静默 skip 的。
+    let floors = -1
+    try { floors = countUserFloors(agent.session) } catch { /* 诊断不能影响主流程 */ }
+    const live = resolveConfig(config)
+    diag(`[floor-limiter] pre-step: floors=${floors} trigger=${live.triggerFloors} keep=${live.keepFloors} compaction=${compaction === undefined ? 'MISSING' : 'ok'}`)
+    await maybeCompactSession(ctx, agent, live, signal, compaction)
     return next()
   })
 }

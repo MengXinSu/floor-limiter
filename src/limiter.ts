@@ -30,6 +30,20 @@ function isUserFloor(event: SessionEvent | undefined): boolean {
 }
 
 /**
+ * Whether the surface head is the system prompt node.
+ *
+ * Such a node only accepts a `system/message` written over exactly itself; a
+ * compaction summary replacing it is refused by the engine, which is why the
+ * compacted range must start after it (official `systemHead` check in
+ * compaction-basic's `selectCompactableRange`).
+ * @param head - the event at surface node 0.
+ * @returns true when node 0 is the system prompt.
+ */
+function isSystemHead(head: SessionEvent | undefined): boolean {
+  return head?.type === 'system/message'
+}
+
+/**
  * Read the session event log across harness versions. 0.1.1 exposed an
  * `events` getter; 0.1.2 removed it in favour of `snapshotEvents()`, so a bare
  * `session.events` read returns `undefined` there and silently disables the
@@ -108,18 +122,32 @@ export function selectCompactionRange(
   const floors = floorBegins.length
   if (floors <= keepFloors) return null
 
+  // 表面头可能是 system prompt（`system/message`）。它只能被另一条
+  // `system/message` 精确覆盖，普通摘要替换会被引擎拒绝：
+  //   "surface replace: node 0 holds the system prompt and may be rewritten
+  //    only by a system/message over exactly that node"
+  // 所以压缩区间从第一个**非 system** 节点开始——镜像官方
+  // `selectCompactableRange` 的 `firstIdx = systemHead(...) === undefined ? 0 : 1`。
+  const firstIdx = isSystemHead(bySeq.get(nodes[0]!)) ? 1 : 0
+  if (firstIdx >= nodes.length) return null
+
   // 保留尾起始:第 (floors - keepFloors) 个 floor 的最后一个 surface position。
   // No floor to keep (keepFloors = 0) means the tail starts after the surface;
   // the walk below then bounds backward from the surface tail.
+  // 保留最近 keepFloors 层：被压缩区间止于「保留区开始的前一个节点」。
+  // 第 (floors - keepFloors) 层就是保留区的第一层（0-based 的 floorBegins 下标），
+  // 所以切点在 floorBegins[floors - keepFloors] 的前一位。keepFloors = 0 走上面的尾部分支。
   const keepFloorOffset = Math.max(floors - keepFloors, 1)
+  const cutOffset = keepFloors === 0 ? floors : floors - keepFloors
   let endIdx = keepFloors === 0
     ? nodes.length - 1
-    : floorBegins[keepFloorOffset]! - 1
+    : floorBegins[cutOffset]! - 1
 
   // Walk left until the cut AFTER `endIdx` is tool-pairing balanced. The
   // surface tail cut (keepFloors = 0) is balanced only after the last
   // completed step; an open step (unpaired tool-call) walks its cut back.
-  while (endIdx >= 0) {
+  // 下界是 firstIdx：区间至少要含一个可替换节点，且不得碰到 system 头。
+  while (endIdx >= firstIdx) {
     let balanced: boolean
     try {
       balanced = toolPairingBalancedAfter(seamSession(session), nodes[endIdx]!)
@@ -130,9 +158,9 @@ export function selectCompactionRange(
     if (balanced) break
     endIdx -= 1
   }
-  if (endIdx < 0) return null
+  if (endIdx < firstIdx) return null
 
-  const start = nodes[0]!
+  const start = nodes[firstIdx]!
   const end = nodes[endIdx]!
   return { start, end }
 }

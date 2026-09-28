@@ -33,6 +33,16 @@ function floor(withTool = false): Spec[] {
 }
 
 /**
+ * One `system/message`: the surface head that holds the system prompt.
+ * It only accepts a `system/message` over exactly itself, so a compaction range
+ * must start after it — the case that used to make every compaction fail with
+ * "node 0 holds the system prompt".
+ */
+function systemHead(): Spec[] {
+  return [{ type: 'system/message' }]
+}
+
+/**
  * Build a live-format Session from specs (append-only, surfaceOp: 'append').
  *
  * The seed boundary of dsh 0.1.7 validates far more than 0.1.2 did, so every
@@ -53,7 +63,20 @@ function makeSession(specs: readonly Spec[]): Session {
   let openCallId: string | undefined
   for (const spec of specs) {
     const envelope = { seq: seq++, time: 1, surfaceOp: 'append' as const }
-    if (spec.type === 'user/message') {
+    if (spec.type === 'system/message') {
+      events.push({
+        ...envelope,
+        type: 'system/message' as const,
+        data: {
+          message: {
+            id: `s${seq}`,
+            role: 'system' as const,
+            source: { kind: 'system-prompt' as const },
+            content: [{ type: 'text' as const, text: 'system prompt' }],
+          },
+        },
+      } as unknown as SessionEvent)
+    } else if (spec.type === 'user/message') {
       turn += 1
       openCallId = undefined
       events.push({
@@ -124,7 +147,7 @@ function makeSession(specs: readonly Spec[]): Session {
   const nodes = session.surface.nodes
   // Each floor is 3 nodes (user, assistant, tool) → floor 15 ends at index 2*15+1 = 44.
   assert.equal(range.start, nodes[0], 'start is surface head')
-  assert.equal(range.end, nodes[44], 'end is floor 15 last node (tool/result)')
+  assert.equal(range.end, nodes[44], 'keeps floors 16..20; compacts 1..15 (ends on floor 15 tool/result)')
 }
 
 // --- 2. Summary (plugin source) does NOT count as a floor ---
@@ -170,8 +193,8 @@ function makeSession(specs: readonly Spec[]): Session {
   const range = selectCompactionRange(session, 5)
   const nodes = session.surface.nodes
   assert.ok(range)
-  // 2-node floors (user, assistant): floor 7 ends at index 2*7-1 = 13.
-  assert.equal(range.end, nodes[13])
+  // 2-node floors (user, assistant): compacting 7 floors ends at index 2*7-1 = 13 → now exactly floor 7.
+  assert.equal(range.end, nodes[13], 'keeps floors 8..12 verbatim; compacts 1..7')
   assert.equal(countUserFloors(session), 12)
 }
 
@@ -189,6 +212,33 @@ function makeSession(specs: readonly Spec[]): Session {
   // before it (index 20) is false, so end walks left to index 19 (last
   // tool/result of floor 10 — balanced).
   assert.equal(range.end, nodes[19], 'open step excluded from compacted span')
+}
+
+// --- 7. system/message at surface node 0 must NOT be inside the range ---
+// Real-session regression: with the system prompt as node 0, `start` used to be
+// nodes[0], and every compaction died with
+//   "surface replace: node 0 holds the system prompt and may be rewritten only
+//    by a system/message over exactly that node"
+// The engine keeps producing summaries and refusing to commit them, silently.
+{
+  const specs: Spec[] = [...systemHead()]
+  for (let i = 0; i < 8; i += 1) specs.push(...floor())
+  const session = makeSession(specs)
+  const nodes = session.surface.nodes
+  assert.equal(nodes.length, 17, '1 system head + 8 floors × 2 nodes')
+  assert.equal(countUserFloors(session), 8, 'system head is not a floor')
+
+  const range = selectCompactionRange(session, 5)
+  assert.ok(range, 'range exists')
+  assert.equal(range.start, nodes[1], 'range starts AFTER the system head, not at node 0')
+  assert.equal(range.end, nodes[6], 'keeps floors 5..8; compacts 1..4 (ends on floor 4 last node)')
+  assert.notEqual(range.start, nodes[0], 'the system prompt is never inside the range')
+
+  // keep 0 with a system head: still starts after the head.
+  const whole = selectCompactionRange(session, 0)
+  assert.ok(whole)
+  assert.equal(whole.start, nodes[1], 'keep 0 still skips the system head')
+  assert.equal(whole.end, nodes[nodes.length - 1], 'keep 0 reaches the surface tail')
 }
 
 console.log('floor-limiter selftest: all assertions passed')

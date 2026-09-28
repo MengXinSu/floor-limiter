@@ -12,6 +12,7 @@
     "emitDeclarationOnly": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/index.ts", "src/limiter.ts", "src/settings.ts", "src/contract.ts"]
