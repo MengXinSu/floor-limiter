@@ -215,8 +215,16 @@ export function selectCompactionRange(
 /**
  * 一次压缩尝试的结局。`'failed'` 与 `'skipped'` 必须区分开：只有前者该触发
  * 「放弃期」，跳过（没到阈值、没有可压区间）不应该被惩罚。
+ *
+ * `reason` 只在 `'failed'` 时出现，是引擎抛出的原始错误文本——**没有它就无法
+ * 定位失败点**：引擎在 `session.append('compaction/start')` 之前有若干校验
+ * （表面范围、计量快照、压缩锁），失败时日志里连 `compaction/start` 都不会有，
+ * 只能靠这句话区分「哪一道校验拦的」。
  */
-export type CompactionOutcome = 'compacted' | 'skipped' | 'failed'
+export type CompactionOutcome =
+  | { readonly outcome: 'compacted' }
+  | { readonly outcome: 'skipped' }
+  | { readonly outcome: 'failed'; readonly reason: string }
 
 /**
  * Run one floor-triggered compaction if the surface has enough real floors.
@@ -239,22 +247,23 @@ export async function maybeCompactSession(
   compaction?: CompactionEngine,
   signal?: AbortSignal,
 ): Promise<CompactionOutcome> {
-  if (!settings.enabled) return 'skipped'
+  if (!settings.enabled) return { outcome: 'skipped' }
   // 放弃期内直接跳过：这个会话已经在同一个位置失败过，重试只是再烧一次摘要。
-  if (isCompactionAbandoned(session)) return 'skipped'
+  if (isCompactionAbandoned(session)) return { outcome: 'skipped' }
   const floors = countUserFloors(session)
-  if (floors < settings.triggerFloors) return 'skipped'
+  if (floors < settings.triggerFloors) return { outcome: 'skipped' }
   const range = selectCompactionRange(session, settings.keepFloors)
   if (range === null) {
     // 到阈值却选不出区间，说明保留量已经覆盖全部楼层——没什么可压的，不是失败。
     console.error('[floor-limiter] nothing to compact: no balanced range outside the kept tail')
-    return 'skipped'
+    return { outcome: 'skipped' }
   }
 
   if (compaction === undefined) {
-    console.error('[floor-limiter] compaction service unavailable for agent — abandoning this session')
+    const reason = 'compaction service unavailable for agent'
+    console.error(`[floor-limiter] ${reason} — abandoning this session`)
     abandonCompaction(session)
-    return 'failed'
+    return { outcome: 'failed', reason }
   }
   try {
     // The compaction seam's Session/Agent types resolve against the repository
@@ -264,11 +273,12 @@ export async function maybeCompactSession(
     type RegionArgs = Parameters<CompactionEngine['compactRegion']>
     const agentContext = session as unknown as RegionArgs[2]
     await compaction.compactRegion(range.start, range.end, agentContext, signal)
-    return 'compacted'
+    return { outcome: 'compacted' }
   } catch (error) {
-    console.error(`[floor-limiter] compactRegion failed: ${error instanceof Error ? error.message : String(error)}`)
+    const reason = error instanceof Error ? error.message : String(error)
+    console.error(`[floor-limiter] compactRegion failed: ${reason}`)
     abandonCompaction(session)
-    return 'failed'
+    return { outcome: 'failed', reason }
   }
 }
 

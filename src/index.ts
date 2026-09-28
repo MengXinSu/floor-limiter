@@ -116,8 +116,14 @@ export function apply(ctx: Context, config: FloorLimiterConfig): void {
     const live = resolveConfig(config)
     diag(`[floor-limiter] pre-step: session=${sessionId} floors=${floors} trigger=${live.triggerFloors} keep=${live.keepFloors} compaction=${compaction === undefined ? 'MISSING' : 'ok'}`)
     // 失败会让这个会话进入「放弃期」，所以结果要留痕——不然下次还是只有楼层数可看。
+    // 失败还要带上引擎的原始报错：失败点可能在 append('compaction/start') 之前，
+    // 那时会话日志里连一个 compaction 事件都不会有，只有这句话能指明是哪道校验拦的。
     const outcome = await maybeCompactSession(agent.session, live, compaction, signal)
-    if (outcome !== 'skipped') diag(`[floor-limiter] compact=${outcome} session=${sessionId} floors=${floors}`)
+    if (outcome.outcome === 'compacted') {
+      diag(`[floor-limiter] compact=compacted session=${sessionId} floors=${floors}`)
+    } else if (outcome.outcome === 'failed') {
+      diag(`[floor-limiter] compact=failed session=${sessionId} floors=${floors} reason=${outcome.reason.slice(0, 180)}`)
+    }
     return next()
   })
 }
