@@ -12,7 +12,7 @@
  * paths — the build works from the repo root after `npm install`.
  */
 import { createRequire } from 'node:module'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -51,9 +51,9 @@ await build({
   format: 'esm',
   platform: 'node',
   target: ['node22'],
-  sourcemap: true,
+  sourcemap: 'external',
   external: dshExternal,
-  logLevel: 'info',
+  logLevel: 'warning',
 })
 
 await build({
@@ -63,7 +63,7 @@ await build({
   format: 'cjs',
   platform: 'browser',
   target: ['es2022'],
-  sourcemap: true,
+  sourcemap: 'external',
   jsx: 'automatic',
   external: [...dshExternal, 'react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime', 'scheduler'],
   banner: {
@@ -72,5 +72,23 @@ await build({
   footer: {
     js: 'return module.exports; } });',
   },
-  logLevel: 'info',
+  logLevel: 'warning',
 })
+
+// esbuild 会在产物里为每个 bundle 进来的模块插一行位置注释（形如 `// ../../<path>`），
+// bundle 进来的依赖路径会带上构建机的目录结构。只剔除这类「注释 + 相对路径」的行，
+// 不碰源码里真正的注释（它们不以 `./` 或 `../` 开头）。
+const hostBundle = 'lib/index.js'
+const stripped = readFileSync(hostBundle, 'utf8')
+  .split('\n')
+  .filter((line) => !/^\/\/\s*\.\.?\//.test(line))
+  .join('\n')
+writeFileSync(hostBundle, stripped)
+
+// 发布产物不携带源码正文：bundle 进来的依赖（schemastery 等）会被 esbuild 内联进
+// sourcesContent，那是它们的原文，不该跟着我们发布。只保留位置映射，调试仍可用。
+for (const mapPath of ['lib/index.js.map', 'lib/client.js.map']) {
+  const map = JSON.parse(readFileSync(mapPath, 'utf8'))
+  delete map.sourcesContent
+  writeFileSync(mapPath, JSON.stringify(map))
+}

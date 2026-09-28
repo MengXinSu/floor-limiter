@@ -11,6 +11,8 @@
  * `settingsScope` service are no longer involved.
  */
 import { appendFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: the ctx.agentPresets Context merge. From dsh 0.1.7 on the release
 // that owns the service is @deepseek-ai/dsh-agent-preset-registry — the old
@@ -55,13 +57,15 @@ export const Config: typeof FloorLimiterSettingsSchema = FloorLimiterSettingsSch
  * 诊断留痕：宿主把 console 输出吞掉了（desktop 端不落盘），所以自己写一个文件，
  * 便于事后回答「楼层到了为什么没压」。只在真正的决策点写，每次唤醒最多一行；
  * 文件超过 1MB 就清空重来，避免长期运行无限增长。
+ *
+ * 路径不含机器相关信息：优先 `DSH_FLOOR_LIMITER_LOG` 环境变量，其次落到当前
+ * 用户的主目录。**不能放临时目录**——宿主进程的 TEMP 与外部工具不是同一个目录。
  */
 function diag(line: string): void {
   // 两条路都走：文件给外部读（desktop 宿主不落盘 console），console 给界面日志面板看。
   console.log(line)
   try {
-    // 固定路径：宿主进程的 TEMP 与外部工具不同（形如 Temp\\dsh-xxxx），用 %TEMP% 会找不到文件。
-    const file = 'D:/DeepSeek Workspace/floor-limiter-diag.log'
+    const file = process.env.DSH_FLOOR_LIMITER_LOG ?? join(homedir(), '.floor-limiter-diag.log')
     try { if (statSync(file).size > 1_000_000) writeFileSync(file, '') } catch { /* 首次不存在 */ }
     appendFileSync(file, `${new Date().toISOString()} ${line}\n`)
   } catch { /* 诊断写不进去不影响主流程 */ }
