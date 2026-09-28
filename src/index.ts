@@ -102,13 +102,18 @@ export function apply(ctx: Context, config: FloorLimiterConfig): void {
 
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     const compaction = ctx.agentPresets.serviceFor(agent, 'compaction')
-    // 每次唤醒都记一行：楼层数 / 阈值 / 引擎是否取到。
+    // 每次唤醒都记一行：会话、楼层数、阈值、引擎是否取到。
     // 上一次之所以难查，就是因为「达到阈值却没压」时是静默 skip 的。
+    // session 用短 ID 标识——「换窗口后到底哪个会话在压」看这一行就能分辨。
+    const session = agent.session as { id?: unknown }
+    const sessionId = typeof session.id === 'string' ? session.id.slice(-8) : 'unknown'
     let floors = -1
     try { floors = countUserFloors(agent.session) } catch { /* 诊断不能影响主流程 */ }
     const live = resolveConfig(config)
-    diag(`[floor-limiter] pre-step: floors=${floors} trigger=${live.triggerFloors} keep=${live.keepFloors} compaction=${compaction === undefined ? 'MISSING' : 'ok'}`)
-    await maybeCompactSession(ctx, agent, live, signal, compaction)
+    diag(`[floor-limiter] pre-step: session=${sessionId} floors=${floors} trigger=${live.triggerFloors} keep=${live.keepFloors} compaction=${compaction === undefined ? 'MISSING' : 'ok'}`)
+    // 失败会让这个会话进入「放弃期」，所以结果要留痕——不然下次还是只有楼层数可看。
+    const outcome = await maybeCompactSession(agent.session, live, compaction, signal)
+    if (outcome !== 'skipped') diag(`[floor-limiter] compact=${outcome} session=${sessionId} floors=${floors}`)
     return next()
   })
 }

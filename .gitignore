@@ -3,3 +3,6 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# 本地诊断探针（读会话日志查压缩行为用的，不属于插件本体）
+probe/

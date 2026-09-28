@@ -17,6 +17,53 @@ import { toolPairingBalancedAfter, toolPairingBalancedBefore, type CompactionEng
 /** The user-source kind that marks a real user floor. */
 const USER_SOURCE_KIND = 'user'
 
+/**
+ * 放弃阈值：压缩失败后，至少再走过这么多事件才允许重试。
+ *
+ * 没有它就是一个死循环——`countUserFloors` 是每轮实时数出来的，失败后下一轮
+ * pre-step 会算出同样的楼层数，于是每轮都重试一次、每轮都真调一次摘要 LLM
+ * （2026-09-28 那条老会话连烧 9 次就是这么来的）。
+ *
+ * 200 个事件大约相当于十几层对话，足够区分「一次偶发失败」和「这个会话已经脏了」：
+ * 前者很快重试，后者不会死磕。
+ */
+const ABANDON_STRIDE_EVENTS = 200
+
+/**
+ * 已放弃压缩的会话 → 放弃时的会话位置（事件数）。
+ *
+ * 用 `WeakMap` 而**不是** `Map<sessionId, …>`：以 session 对象本身作 key，会话被
+ * 回收时条目自动消失。所以它不驻留、不泄漏、不写盘，进程死了一起死；对同一个
+ * 会话最多只存一条记录。
+ */
+const abandonedSessions = new WeakMap<object, number>()
+
+/** 当前会话位置（事件数），用作放弃判定与重试的单调时钟。 */
+function sessionPosition(session: Session): number {
+  return readEvents(session).length
+}
+
+/**
+ * 这个会话是否还处于「放弃期」（失败后还没走够 {@link ABANDON_STRIDE_EVENTS}）。
+ * @param session - 被检查的会话。
+ * @returns true 表示本轮应当跳过压缩尝试。
+ */
+function isCompactionAbandoned(session: Session): boolean {
+  if (typeof session !== 'object' || session === null) return false
+  const since = abandonedSessions.get(session)
+  return since !== undefined && sessionPosition(session) - since < ABANDON_STRIDE_EVENTS
+}
+
+/**
+ * 记录一次压缩失败：该会话在当前位置之后的一段时间内不再尝试。
+ * 判定见 {@link isCompactionAbandoned}；记录随会话对象一起被 GC 回收。
+ * @param session - 压缩失败的会话。
+ */
+function abandonCompaction(session: Session): void {
+  if (typeof session !== 'object' || session === null) return
+  abandonedSessions.set(session, sessionPosition(session))
+}
+
 /** The live settings read by the limiter on every pre-step. */
 export interface LimiterSettings {
   readonly enabled: boolean
@@ -166,34 +213,48 @@ export function selectCompactionRange(
 }
 
 /**
+ * 一次压缩尝试的结局。`'failed'` 与 `'skipped'` 必须区分开：只有前者该触发
+ * 「放弃期」，跳过（没到阈值、没有可压区间）不应该被惩罚。
+ */
+export type CompactionOutcome = 'compacted' | 'skipped' | 'failed'
+
+/**
  * Run one floor-triggered compaction if the surface has enough real floors.
  * Anything that prevents a safe compaction (no range, unbalanced boundary,
  * summary not smaller, active compaction, aborted signal, missing seam)
- * yields `false` and never throws — the turn continues untouched and a later
- * pre-step retries.
- * @param ctx - plugin context carrying the compaction seam.
- * @param agent - the waking agent whose session is compacted.
+ * yields a non-`'compacted'` outcome and never throws — the turn continues
+ * untouched and a later pre-step retries.
+ *
+ * 失败（引擎拒绝、摘要生成不出来）会让这个会话进入「放弃期」：之后至少再走过
+ * {@link ABANDON_STRIDE_EVENTS} 个事件才重试，避免每轮都白烧一次摘要 LLM。
+ * @param session - the session whose floors and ranges are inspected.
  * @param settings - live limiter settings.
- * @param signal - live turn cancellation signal.
  * @param compaction - injected compaction engine (resolved at plugin load).
- * @returns true when a compaction was committed; false when skipped.
+ * @param signal - live turn cancellation signal.
+ * @returns what this attempt actually did.
  */
 export async function maybeCompactSession(
-  ctx: Context,
-  agent: Agent,
+  session: Session,
   settings: LimiterSettings,
-  signal: AbortSignal,
   compaction?: CompactionEngine,
-): Promise<boolean> {
-  if (!settings.enabled) return false
-  const floors = countUserFloors(agent.session)
-  if (floors < settings.triggerFloors) return false
-  const range = selectCompactionRange(agent.session, settings.keepFloors)
-  if (range === null) return false
+  signal?: AbortSignal,
+): Promise<CompactionOutcome> {
+  if (!settings.enabled) return 'skipped'
+  // 放弃期内直接跳过：这个会话已经在同一个位置失败过，重试只是再烧一次摘要。
+  if (isCompactionAbandoned(session)) return 'skipped'
+  const floors = countUserFloors(session)
+  if (floors < settings.triggerFloors) return 'skipped'
+  const range = selectCompactionRange(session, settings.keepFloors)
+  if (range === null) {
+    // 到阈值却选不出区间，说明保留量已经覆盖全部楼层——没什么可压的，不是失败。
+    console.error('[floor-limiter] nothing to compact: no balanced range outside the kept tail')
+    return 'skipped'
+  }
 
   if (compaction === undefined) {
-    console.error('[floor-limiter] compaction service unavailable for agent — skipping')
-    return false
+    console.error('[floor-limiter] compaction service unavailable for agent — abandoning this session')
+    abandonCompaction(session)
+    return 'failed'
   }
   try {
     // The compaction seam's Session/Agent types resolve against the repository
@@ -201,12 +262,13 @@ export async function maybeCompactSession(
     // cast at the seam boundary keeps the plugin type-checking while calling
     // the service exactly as the official command plugin does.
     type RegionArgs = Parameters<CompactionEngine['compactRegion']>
-    const agentContext = agent as unknown as RegionArgs[2]
+    const agentContext = session as unknown as RegionArgs[2]
     await compaction.compactRegion(range.start, range.end, agentContext, signal)
-    return true
+    return 'compacted'
   } catch (error) {
     console.error(`[floor-limiter] compactRegion failed: ${error instanceof Error ? error.message : String(error)}`)
-    return false
+    abandonCompaction(session)
+    return 'failed'
   }
 }
 
