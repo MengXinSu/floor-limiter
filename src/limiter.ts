@@ -235,9 +235,23 @@ export type CompactionOutcome =
  *
  * 失败（引擎拒绝、摘要生成不出来）会让这个会话进入「放弃期」：之后至少再走过
  * {@link ABANDON_STRIDE_EVENTS} 个事件才重试，避免每轮都白烧一次摘要 LLM。
- * @param session - the session whose floors and ranges are inspected.
+ * @param agent - the waking agent whose session is compacted.
  * @param settings - live limiter settings.
  * @param compaction - injected compaction engine (resolved at plugin load).
+ * @param signal - live turn cancellation signal.
+ * @returns what this attempt actually did.
+ */
+export async function maybeCompactSession(
+  agent: Agent,
+  settings: LimiterSettings,
+  compaction?: CompactionEngine,
+  signal?: AbortSignal,
+): Promise<CompactionOutcome>
+/**
+ * 只拿得到 Session 的调用方（探针、单元测试）可以走这一版，语义相同。
+ * @param session - the session whose floors and ranges are inspected.
+ * @param settings - live limiter settings.
+ * @param compaction - injected compaction engine.
  * @param signal - live turn cancellation signal.
  * @returns what this attempt actually did.
  */
@@ -246,7 +260,19 @@ export async function maybeCompactSession(
   settings: LimiterSettings,
   compaction?: CompactionEngine,
   signal?: AbortSignal,
+): Promise<CompactionOutcome>
+export async function maybeCompactSession(
+  target: Agent | Session,
+  settings: LimiterSettings,
+  compaction?: CompactionEngine,
+  signal?: AbortSignal,
 ): Promise<CompactionOutcome> {
+  // 引擎的 `compactRegion(start, end, agent, signal)` 要的是 **agent**——它内部读
+  // `agent.session` 交给摘要器。两者归一化后再往下走：传错对象会让引擎拿到
+  // `undefined.session`（2026-09-28 的回归就是这么炸的，reason 是
+  // "Cannot read properties of undefined (reading 'surface')"）。
+  const agent = 'session' in target ? (target as Agent) : undefined
+  const session = agent === undefined ? (target as Session) : agent.session
   if (!settings.enabled) return { outcome: 'skipped' }
   // 放弃期内直接跳过：这个会话已经在同一个位置失败过，重试只是再烧一次摘要。
   if (isCompactionAbandoned(session)) return { outcome: 'skipped' }
@@ -270,8 +296,12 @@ export async function maybeCompactSession(
     // declaration graph; the runtime object is the same shape. One structural
     // cast at the seam boundary keeps the plugin type-checking while calling
     // the service exactly as the official command plugin does.
+    //
+    // 第三个参数必须是 agent（引擎要读 `agent.session`）。只有调用方给的就是
+    // Session 时（探针/单测），才退化成把它当 agent 传——引擎在那种路径上
+    // 只会碰 `agent.session`，而探针的壳会自带 session。
     type RegionArgs = Parameters<CompactionEngine['compactRegion']>
-    const agentContext = session as unknown as RegionArgs[2]
+    const agentContext = (agent ?? { session }) as unknown as RegionArgs[2]
     await compaction.compactRegion(range.start, range.end, agentContext, signal)
     return { outcome: 'compacted' }
   } catch (error) {
