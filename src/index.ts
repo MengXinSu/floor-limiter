@@ -55,7 +55,9 @@ export const Config: typeof FloorLimiterSettingsSchema = FloorLimiterSettingsSch
  */
 /**
  * 诊断留痕：宿主把 console 输出吞掉了（desktop 端不落盘），所以自己写一个文件，
- * 便于事后回答「楼层到了为什么没压」。只在真正的决策点写，每次唤醒最多一行；
+ * 便于事后回答「楼层到了为什么没压」。只在决策点写：挂载（一次）、某会话首次跨过
+ * 阈值（每会话一次）、压缩结果（成功/失败）。未达阈值的常规步进一律不写——那是绝大
+ * 多数唤醒，写了就等于每一步一次同步写盘。
  * 文件超过 1MB 就清空重来，避免长期运行无限增长。
  *
  * 路径不含机器相关信息：优先 `DSH_FLOOR_LIMITER_LOG` 环境变量，其次落到当前
@@ -104,17 +106,24 @@ export function apply(ctx: Context, config: FloorLimiterConfig): void {
   // 永久 pending）——「楼层到了却没压缩」的第一分诊点。
   diag('[floor-limiter] mounted: pre-step listener registered')
 
+  // 已报过「跨过阈值」的会话短 ID。只活在内存里，不落盘；重挂载即重置。
+  const triggerLogged = new Set<string>()
+
   ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
     const compaction = ctx.agentPresets.serviceFor(agent, 'compaction')
-    // 每次唤醒都记一行：会话、楼层数、阈值、引擎是否取到。
-    // 上一次之所以难查，就是因为「达到阈值却没压」时是静默 skip 的。
-    // session 用短 ID 标识——「换窗口后到底哪个会话在压」看这一行就能分辨。
+    // session 用短 ID 标识——「换窗口后到底哪个会话在压」，看日志就能分辨。
     const session = agent.session as { id?: unknown }
     const sessionId = typeof session.id === 'string' ? session.id.slice(-8) : 'unknown'
     let floors = -1
     try { floors = countUserFloors(agent.session) } catch { /* 诊断不能影响主流程 */ }
     const live = resolveConfig(config)
-    diag(`[floor-limiter] pre-step: session=${sessionId} floors=${floors} trigger=${live.triggerFloors} keep=${live.keepFloors} compaction=${compaction === undefined ? 'MISSING' : 'ok'}`)
+    // 只有「首次跨过阈值」写一行（每会话至多一次），常规步进一律不写盘。
+    // 分诊能力保留：有这行却没有随后的 compact= 行 = 已达阈值但被跳过（放弃期 /
+    // 选不出可压区间）；连这行都没有 = 没到阈值，或插件根本没挂载。
+    if (floors >= live.triggerFloors && !triggerLogged.has(sessionId)) {
+      triggerLogged.add(sessionId)
+      diag(`[floor-limiter] trigger reached: session=${sessionId} floors=${floors} trigger=${live.triggerFloors} keep=${live.keepFloors} compaction=${compaction === undefined ? 'MISSING' : 'ok'}`)
+    }
     // 失败会让这个会话进入「放弃期」，所以结果要留痕——不然下次还是只有楼层数可看。
     // 失败还要带上引擎的原始报错：失败点可能在 append('compaction/start') 之前，
     // 那时会话日志里连一个 compaction 事件都不会有，只有这句话能指明是哪道校验拦的。
